@@ -1,9 +1,6 @@
 package io.eventuate.messaging.kafka.basic.consumer;
 
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
@@ -29,9 +26,9 @@ public class EventuateKafkaConsumer {
   private Properties consumerProperties;
   private volatile EventuateKafkaConsumerState state = EventuateKafkaConsumerState.CREATED;
 
-  volatile boolean closeConsumerOnStop = true;
+  private volatile boolean closeConsumerOnStop = true;
 
-  Optional<ConsumerCallbacks> consumerCallbacks = Optional.empty();
+  private Optional<ConsumerCallbacks> consumerCallbacks = Optional.empty();
 
   public EventuateKafkaConsumer(String subscriberId,
                                 EventuateKafkaConsumerMessageHandler handler,
@@ -48,7 +45,19 @@ public class EventuateKafkaConsumer {
     this.pollTimeout = eventuateKafkaConsumerConfigurationProperties.getPollTimeout();
   }
 
-  public static List<PartitionInfo> verifyTopicExistsBeforeSubscribing(KafkaConsumer<String, String> consumer, String topic) {
+  public void setConsumerCallbacks(Optional<ConsumerCallbacks> consumerCallbacks) {
+    this.consumerCallbacks = consumerCallbacks;
+  }
+
+  public boolean isCloseConsumerOnStop() {
+    return closeConsumerOnStop;
+  }
+
+  public void setCloseConsumerOnStop(boolean closeConsumerOnStop) {
+    this.closeConsumerOnStop = closeConsumerOnStop;
+  }
+
+  public static List<PartitionInfo> verifyTopicExistsBeforeSubscribing(KafkaConsumer<String, byte[]> consumer, String topic) {
     try {
       logger.debug("Verifying Topic {}", topic);
       List<PartitionInfo> partitions = consumer.partitionsFor(topic);
@@ -60,7 +69,7 @@ public class EventuateKafkaConsumer {
     }
   }
 
-  private void maybeCommitOffsets(KafkaConsumer<String, String> consumer, KafkaMessageProcessor processor) {
+  private void maybeCommitOffsets(KafkaConsumer<String, byte[]> consumer, KafkaMessageProcessor processor) {
     Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = processor.offsetsToCommit();
     if (!offsetsToCommit.isEmpty()) {
       consumerCallbacks.ifPresent(ConsumerCallbacks::onTryCommitCallback);
@@ -74,7 +83,7 @@ public class EventuateKafkaConsumer {
 
   public void start() {
     try {
-      KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties);
+      KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProperties);
 
       KafkaMessageProcessor processor = new KafkaMessageProcessor(subscriberId, handler);
 
@@ -128,54 +137,75 @@ public class EventuateKafkaConsumer {
     }
   }
 
+
   private void runPollingLoop(KafkaConsumer<String, String> consumer, KafkaMessageProcessor processor, BackPressureManager backPressureManager) {
-    while (!stopFlag.get()) {
-      ConsumerRecords<String, String> records = consumer.poll(Duration.of(100, ChronoUnit.MILLIS));
-      if (!records.isEmpty())
-        logger.debug("Got {} {} records", subscriberId, records.count());
+       int i=0;
+      while (!stopFlag.get()) {
+        try{
+        ConsumerRecords<String, String> records = consumer.poll(100);
+        if (!records.isEmpty())
+          logger.debug("Got {} {} records", subscriberId, records.count());
 
-      if (records.isEmpty())
-        processor.throwFailureException();
-      else
-        for (ConsumerRecord<String, String> record : records) {
-          logger.debug("processing record {} {} {}", subscriberId, record.offset(), record.value());
-          if (logger.isDebugEnabled())
-            logger.debug(String.format("EventuateKafkaAggregateSubscriptions subscriber = %s, offset = %d, key = %s, value = %s", subscriberId, record.offset(), record.key(), record.value()));
-          processor.process(record);
-        }
-      if (!records.isEmpty())
-        logger.debug("Processed {} {} records", subscriberId, records.count());
+        if (records.isEmpty())
+          processor.throwFailureException();
+        else
+          for (ConsumerRecord<String, String> record : records) {
+            logger.debug("processing record {} {} {}", subscriberId, record.offset(), record.value());
+            if (logger.isDebugEnabled())
+              logger.debug(String.format("EventuateKafkaAggregateSubscriptions subscriber = %s, offset = %d, key = %s, value = %s", subscriberId, record.offset(), record.key(), record.value()));
+            processor.process(record);
+          }
+        if (!records.isEmpty())
+          logger.debug("Processed {} {} records", subscriberId, records.count());
 
-      try {
         maybeCommitOffsets(consumer, processor);
-      } catch (Exception e) {
-        logger.error("Cannot commit offsets", e);
-        consumerCallbacks.ifPresent(ConsumerCallbacks::onCommitFailedCallback);
-      }
 
-      if (!records.isEmpty())
-        logger.debug("To commit {} {}", subscriberId, processor.getPending());
+        if (!records.isEmpty())
+          logger.debug("To commit {} {}", subscriberId, processor.getPending());
 
-      int backlog = processor.backlog();
+        int backlog = processor.backlog();
 
-      Set<TopicPartition> topicPartitions = new HashSet<>();
-      for (ConsumerRecord<String, String> record : records) {
-        topicPartitions.add(new TopicPartition(record.topic(), record.partition()));
-      }
-      BackPressureActions actions = backPressureManager.update(topicPartitions, backlog);
-
-      if (!actions.pause.isEmpty()) {
-        logger.info("Subscriber {} pausing {} due to backlog {} > {}", subscriberId, actions.pause, backlog, backPressureConfig.getHigh());
-        consumer.pause(actions.pause);
-      }
-
-      if (!actions.resume.isEmpty()) {
-        logger.info("Subscriber {} resuming {} due to backlog {} <= {}", subscriberId, actions.resume, backlog, backPressureConfig.getLow());
-        consumer.resume(actions.resume);
-      }
+        Set<TopicPartition> topicPartitions = new HashSet<>();
+        for (ConsumerRecord<String, String> record : records) {
+          topicPartitions.add(new TopicPartition(record.topic(), record.partition()));
+        }
+        BackPressureActions actions = backPressureManager.update(topicPartitions, backlog);
+        if (!actions.pause.isEmpty()) {
+          logger.info("Subscriber {} pausing {} due to backlog {} > {}", subscriberId, actions.pause, backlog, backPressureConfig.getHigh());
+          consumer.pause(actions.pause);
+        }
 
 
+        if (!actions.resume.isEmpty()) {
+          logger.info("Subscriber {} resuming {} due to backlog {} <= {}", subscriberId, actions.resume, backlog, backPressureConfig.getLow());
+          consumer.resume(actions.resume);
+        }
+        i=0;
+      } catch (KafkaMessageProcessorFailedException e) {
+      // We are done
+          i++;
+         logger.debug("发生可重复异常 KafkaMessageProcessorFailedException {} 次 {}",i,e);
+         if (i>10){
+           logger.error("发生不可恢复错误，系统无法正常工作，需要人工停机检查！！ {}",e);
+           throw e;
+         }else {
+           try{Thread.sleep(100*i);}catch (Exception e1){};
+         }
+        }catch (CommitFailedException e){
+          i++;
+          logger.debug("发生可重复异常 CommitFailedException {}次，{}",i,e);
+          if (i>10){
+            logger.error("发生不可恢复错误，系统无法正常工作，需要人工停机检查！！ {}",e);
+            throw e;
+          }else {
+            try{Thread.sleep(100*i);}catch (Exception e1){};
+          }
+        } catch (Throwable e) {
+          logger.error("发生不可恢复错误，系统无法正常工作，需要人工停机检查！！ {}",e);
+      throw new RuntimeException(e);
     }
+      }
+
   }
 
   public void stop() {
