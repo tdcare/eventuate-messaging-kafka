@@ -95,6 +95,7 @@ public class EventuateKafkaConsumer {
           // We are done
           logger.trace("Terminating since KafkaMessageProcessorFailedException");
           state = EventuateKafkaConsumerState.MESSAGE_HANDLING_FAILED;
+          throw e;
         } catch (Throwable e) {
           logger.error("Got exception: ", e);
           state = EventuateKafkaConsumerState.FAILED;
@@ -161,7 +162,7 @@ public class EventuateKafkaConsumer {
           i++;
          logger.debug("发生可重复异常 KafkaMessageProcessorFailedException {} 次 {}",i,e);
          if (i>10){
-           logger.error("发生不可恢复错误，系统无法正常工作，需要人工停机检查！！ {}",e);
+           logger.error("1、发生不可恢复错误，系统无法正常工作，需要人工停机检查！",e);
            throw e;
          }else {
            try{Thread.sleep(100*i);}catch (Exception e1){};
@@ -170,13 +171,13 @@ public class EventuateKafkaConsumer {
           i++;
           logger.debug("发生可重复异常 CommitFailedException {}次，{}",i,e);
           if (i>10){
-            logger.error("发生不可恢复错误，系统无法正常工作，需要人工停机检查！！ {}",e);
+            logger.error("2、发生不可恢复错误，系统无法正常工作，需要人工停机检查！",e);
             throw e;
           }else {
             try{Thread.sleep(100*i);}catch (Exception e1){};
           }
         } catch (Throwable e) {
-          logger.error("发生不可恢复错误，系统无法正常工作，需要人工停机检查！！ {}",e);
+          logger.error("3、发生不可恢复错误，系统无法正常工作，需要人工停机检查！",e);
       throw new RuntimeException(e);
     }
       }
